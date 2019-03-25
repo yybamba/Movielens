@@ -1,0 +1,1120 @@
+---
+title: "MOVIELENS Project"
+author: "by Yaya Bamba"
+output:  html_document
+ 
+---
+
+
+## PROJECT OVERVIEW
+
+For this project, I will be creating a movie recommendation system using the MovieLens dataset. I will use the 10M version of the MovieLens dataset to make the computation a little easier. The entire dataset can be found at this link : <https://grouplens.org/datasets/movielens/latest/>
+
+I will train a machine learning algorithm using the inputs in  edx dataset (training set) to predict movie ratings in the validation set. Not all movies were rated in the dataset by all Users. Our goal is  to predict which rating a user will give to a particular movie based on other users' ratings for that movie and other features in the dataset.
+
+On the agenda for this report I will have the below sections :
+
+
+* SETTING THE DATASET
+
+* DATA PRE-PROCESSING
+
+* EXPLORATORY DATA ANALYSIS
+
+* FEATURE ENGINEERING
+
+* DATA PREPARATION
+
+* MODELLING
+
+* RESULTS
+
+* PROJECT CONCLUSIONS
+
+I will start by preprocessing the data to make it fit for our machine learning algorithms, do some data exploration to find out leading patterns in the data,   and understand which features drives the ratings in the dataset best, do some modelling and finally  conclude based on my results .
+
+First and foremost, let's start by setting the data for the project
+ 
+## SETTING THE DATASET 
+
+```{r echo=TRUE, include = FALSE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+# change directory to Local harvard project
+setwd("C:/Users/284562667/Desktop/Docs perso/EDX COURSES/HARVARD Data Science Certificate/Harvard PROJECT")
+```
+
+I  will be using the below libraries.
+
+```{r echo=TRUE, include = TRUE,  eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+# load the required libraries -
+ library(caret, warn.conflicts = FALSE, quietly=TRUE)
+ library(data.table, warn.conflicts = FALSE, quietly=TRUE)
+ library(tidyverse, warn.conflicts = FALSE, quietly=TRUE)
+ library(dslabs, warn.conflicts = FALSE, quietly=TRUE)
+ library(dplyr, warn.conflicts = FALSE, quietly=TRUE)
+ library(stringr, warn.conflicts = FALSE, quietly=TRUE)
+ library(lubridate, warn.conflicts = FALSE, quietly=TRUE)
+ library(e1071, warn.conflicts = FALSE, quietly=TRUE)
+ library(corrplot, warn.conflicts = FALSE, quietly=TRUE)
+ library(ggplot2, warn.conflicts = FALSE, quietly=TRUE)
+ library(gtable, warn.conflicts = FALSE, quietly=TRUE)
+ library(grid, warn.conflicts = FALSE, quietly=TRUE)
+ library(gridExtra, warn.conflicts = FALSE, quietly=TRUE)
+
+```
+
+
+```{r echo=TRUE, include = FALSE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+# load Movielens dataset -
+dl <- tempfile()
+download.file("http://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+
+ratings <- fread(text = gsub("::", "\t", readLines(unzip(dl, "ml-10M100K/ratings.dat"))),
+                       col.names = c("userId", "movieId", "rating", "timestamp"))
+
+# unzip the dataset and assign  readable column names
+
+movies <- str_split_fixed(readLines(unzip(dl, "ml-10M100K/movies.dat")), "\\::", 3)
+ colnames(movies) <- c("movieId", "title", "genres")
+ movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(levels(movieId))[movieId],
+                                            title = as.character(title),
+                                            genres = as.character(genres))
+
+movielens <- left_join(ratings, movies, by = "movieId")
+```
+
+
+
+```{r echo=TRUE, include = FALSE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+
+# Validation set will be 10% of MovieLens data
+
+set.seed(1)
+ test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+ edx <- movielens[-test_index,]
+ temp <- movielens[test_index,]
+
+ # Make sure userId and movieId in validation set are also in edx set
+
+validation <- temp %>%
+      semi_join(edx, by = "movieId") %>%
+      semi_join(edx, by = "userId")
+
+# Add rows removed from validation set back into edx set
+
+removed <- anti_join(temp, validation)
+ edx <- rbind(edx, removed)
+ rm(dl, ratings, movies, test_index, temp, movielens, removed)
+
+```
+
+Let's have a summary of the dataset and a glimse of the table 
+
+
+
+```{r echo=TRUE, include = TRUE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+dim(edx)
+```
+
+The new table have 9000055 rows and 6 columns
+
+
+```{r echo=TRUE, include = TRUE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+n_distinct(edx$movieId)
+
+length(unique(edx[["userId"]]))
+```
+There are 10677 disctinct movies in the dataset and those movies were rated by 69878 different users
+
+
+```{r echo=TRUE, include = TRUE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+edx %>% group_by(movieId, title) %>%
+	summarize(count = n()) %>%
+	arrange(desc(count))
+```
+
+The movie with the greatest numbers of raters, the one most frequently rated by the users is PULP FICTION (I never watched that movie, but I have to admit that this picked my interest for this movie)
+
+
+```{r echo=TRUE, include = TRUE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+head(edx)
+glimpse(edx)
+```
+
+A quick glimpse at the dataset give us an idea of how the table now looks. we can see that we might have to do some preprocessing :  
+
+* the movie premier year is tied to the movie title . we will need to extract it in order to compute the movie age by the time it was rated by a specific user 
+
+* Timestamps represents the date in time the movie has been rated by a particular user . we will need to convert the timestamp to year in order to explore its relation with the movie age
+
+* Ratings are made on a 5-star scale, with half-star increments. we will need to compute the average rating per movie for exploration purposes
+
+
+Lets move to preprocessing and see how we can prepare our data for machine learning steps
+
+## DATA PRE-PROCESSING
+
+Preparing the data is a prerequisite to get the best results from machine learning algorithms we intend to use in this project.  In this section, we will prepare edx dataset in order to best expose its structure to machine learning algorithms in R. we will be using the caret package. Based on the look on the data we will proceed with the below preprocessing :  
+
+* Extract the movie premier year in order to compute the movie age  
+* convert the rating's timestamp to year in order to explore its relation with the movie age
+* Create and average rating for each movie in the dataset  
+
+
+
+```{r echo=TRUE, include = FALSE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+#extracting the premier year
+premierdate <- stringi::stri_extract(edx$title, regex = "(\\d{4})", comments = TRUE ) %>% as.numeric()
+
+#Add the premier year as a column to edx dataset
+edx <- edx %>% mutate(premier_year = premierdate)
+head(edx)
+```
+
+
+```{r echo=TRUE, include = FALSE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+
+# convert the rating timestamp to year and add it to edx dataset
+
+edx <- mutate(edx, year_rated = year(as_datetime(timestamp)))
+
+
+# look at the new edx table to make sure we are good
+head(edx)
+```
+
+ we need to make sure that the data in the column make sense and is clean. let's check if the rated year is consistent. We will also check consistency in the premier date column
+
+```{r echo=TRUE, include = TRUE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+
+# check if there is a premier year greater than the year 2019
+edx %>% filter(premier_year > 2019) %>% group_by(movieId, title, premier_year) %>% summarize(n = n())
+
+# check is there is a premier date inferior to the year 1900
+
+edx %>% filter(premier_year < 1900) %>% group_by(movieId, title, premier_year) %>% summarize(n = n())
+
+```
+
+
+We will look into those movie titles to  the correct premier year and replace the wrong premier years by  the correct ones
+
+```{r echo=TRUE, include = TRUE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+
+#replace the incorrect premier years after looking up on the movie title
+
+edx[edx$movieId == "671", "premier_year"] <- 1996
+edx[edx$movieId == "2308", "premier_year"] <- 1973
+edx[edx$movieId == "4159", "premier_year"] <- 2001
+edx[edx$movieId == "5310", "premier_year"] <- 1985
+edx[edx$movieId == "8864", "premier_year"] <- 2004
+edx[edx$movieId == "27266", "premier_year"] <- 2004
+edx[edx$movieId == "1422", "premier_year"] <- 1997
+edx[edx$movieId == "4311", "premier_year"] <- 1998
+edx[edx$movieId == "5472", "premier_year"] <- 1972
+edx[edx$movieId == "6290", "premier_year"] <- 2003
+edx[edx$movieId == "6645", "premier_year"] <- 1971
+edx[edx$movieId == "8198", "premier_year"] <- 1960
+edx[edx$movieId == "8905", "premier_year"] <- 1992
+edx[edx$movieId == "53953", "premier_year"] <- 2007
+
+```
+
+
+
+
+
+## FEATURES ENGINEERING
+
+
+Before doing some exploratory data analysis, we need to add additional features to the data set that will help us improve the predictive accuracy of our marchine learning model. We will add the below useful feature which are derived from the original features :
+
+ * Movie age (movie_age)
+ * average movie rating : movie_avg_rat
+ * average user rating : User_avg_rat
+ * average rating by movie age :age_avg_rat 
+ * Number of votes per movie : numbVotes
+
+
+
+```{r echo=TRUE, include = TRUE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+
+
+#Calculate the  movie age  by the time the movie was rated by the user and add the variable to the dataset edx
+
+edx <- edx %>% mutate( movie_age = year_rated - premier_year)
+
+#Calculate average rating by movie add the column to edx dataset
+
+edx <- edx %>% group_by(movieId) %>% mutate(movie_avg_rat = mean(rating))
+
+# Calculate average rating by  user  and add the column to edx dataset
+
+edx <- edx %>% group_by(userId) %>% mutate(user_avg_rat = mean(rating))
+
+# Calculate average rating by movie age and add the column to edx dataset
+
+edx <- edx %>% group_by(movie_age) %>% mutate(age_avg_rat = mean(rating))
+
+# Calculate   the number of  votes per movie and add the column to edx dataset - this this how many time a specific movie was rated
+
+edx <- edx %>% group_by(movieId) %>% mutate(numbVotes = length(unique(userId)))
+
+
+```
+
+
+
+## EXPLORATORY DATA ANALYSIS
+
+In this phase we will try to have a better understanding of the dataset. we will do take a look at the features , study their correlation between them, study their correlation with the outcome variable (rating) and look for outliers in the data.
+
+**1.Study outcome variable**
+Let's compute some useful summary statistics about our outcome variable (ratings) to have an idea of the data distribution
+
+```{r echo=TRUE, include = TRUE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+
+#Calculate summary statistics
+summary(edx)
+
+```
+
+The rating range is 0.5 to 5 . We Notice that the mean and median are close but the Mean (3.512) is less that the Median (4) which means that the rating distribution is slightly skewed to the Left.
+Let's graph that :
+
+```{r echo=FALSE, include = FALSE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+
+#Create a custum function to get the mode to plot alongside the median and mean. the mode rating is the values that occurs most often 
+
+getmode <- function(v) {
+  modrat <- unique(v)
+  modrat[which.max(tabulate(match(v,modrat)))]
+  }
+
+
+```
+
+
+```{r echo= TRUE, include = TRUE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+# plot the grapht using ggplot
+
+ggplot(data= edx) +
+  geom_histogram(mapping = aes(x=rating), bins = 15, boundary = 0, fill= "gray", col = "black") +
+  geom_vline(xintercept = mean(edx$rating), col="blue", size= 1 ) +
+  geom_vline(xintercept = median(edx$rating), col="red", size= 1 ) +
+  geom_vline(xintercept = getmode(edx$rating), col="green", size= 1 ) +
+   ggtitle ("histrogram of Ratings Distribution") +
+  theme_bw()
+
+```
+
+As we can see, the distribution of the variable Rating  is not perfectly normal, but we are going to proceed and assume it is normal as it is close enough to normal. since this is a regression problem, we don't have to worry about class imbalance (As oppose to if we had a classification project)
+
+**2.Study features**
+
+Lets understand the  features by computing Summary statistics statistics about them. right now we anticipate 5 features based on the features in the final edx dataset
+
+ * Each movie age at the time of rating (movie_age)
+ * average  rating by movie  (movie_avg_rat)
+ * average rating by user  (User_avg_rat)
+ * average rating by  age (age_avg_rat)
+ * Number of votes/ratings per movie (numbVotes)
+
+
+We will now do a correlation plot. This correlation plot wll display a chart showing the correlation between all feature variables. It will also let us anticipate if we need all our variables features in our model. We don't want our feature variables to present a high correlation between them as this will lead to Multicolinearity.
+If our dataset has perfectly positive or negative attributes then there is a high chance that the performance of the model will be impacted by a problem called "Multicollinearity". Multicollinearity happens when one predictor variable in a multiple regression model can be linearly predicted from the others with a high degree of accuracy (Correlation between 0.7 and 1). 
+
+Since we are using regression, lets check multicolinearity before moving further
+
+```{r echo=FALSE, include = FALSE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+
+
+# check if there is some missing values in the columns. we don't want missing values for the training set
+
+sapply(edx, {function(x) any(is.na(x))})
+
+# or in the whole dataset
+anyNA(edx)
+
+#Compute correlation plots for Features. before that I need to drop the characters columns and keep only the numeric ones
+
+#drop non numeric columns  for the sake of correlation plot and take a look at dataset
+edx_cor <- edx %>% select(-timestamp, -title, -genres, -premier_year, -year_rated)
+head(edx_cor)
+
+```
+
+```{r echo=FALSE, include = TRUE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+
+
+#Compute correlation plots for Features.
+
+corrplot(as.matrix(cor(edx_cor)),  method = "circle", type = "upper")
+
+```
+
+with the correlation numbers
+
+```{r echo=FALSE, include = TRUE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+#Compute correlation plots for Features. - With the numbers
+corrplot(as.matrix(cor(edx_cor)),  method = "number", type = "upper")
+
+
+```
+
+
+From the correlation matrix, we can have the below insights :
+
+**Insight 1** the predictive outcome is positively correlated to the movie average rating (0.46) , the user average rating (0.4) and midly to the number of votes (0.17). we will keep those 3 features as dependant variables
+
+ 
+**Insight 2** :  there is a strong correlation between movie_age and age_avg_rat variables (0.85) . We will  drop the age average rating from the features to avoid multicolinearity effects. 
+
+
+
+```{r echo=TRUE, include = TRUE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+
+# age of movie vs average movie rating
+edx <- as.data.frame(edx) # convert edx to data frame to allow for the ploting
+edx %>%
+  ggplot(aes(movie_age, age_avg_rat)) +
+  geom_point(aes(col=age_avg_rat), size = 3) +
+  ggtitle("Movie age vs age Average Rating")
+
+````
+
+we can see this high correlation by plotting the movie age vs age Average rating scaterplot. we can clearly see that new movies tend to have  higher ratings with a positive correlation . Then when the movie is old at the time of rating (Around 90 years old), the ratings tends to drop to lower levels (below 3.25). the older the movie, le lower the rating
+
+
+ **Explore relationship between users and ratings**
+ 
+Let's plot the relationship between  Users and Users average rating
+ 
+```{r echo=TRUE, include = TRUE,  eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+
+ # userId vs average movie rating
+
+  edx  %>%
+  ggplot(aes(userId, user_avg_rat)) +
+  geom_point(alpha = 1/20, colour = "red") +
+  ggtitle("UserId vs user average rating")
+ 
+```
+ 
+**Insight 3** : we can see on the above plot that on average users consistently rate movies between 2.5 and 4.5
+
+
+**Explore relationship between Movies and movie average ratings**
+
+Let's plot the relationship between  movies  and movies average rating
+
+
+```{r echo=FALSE, include = TRUE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+
+ # movieId vs average movie rating
+
+  edx  %>%
+  ggplot(aes(movieId, movie_avg_rat)) +
+  geom_point(alpha = 1/20, colour = "green") +
+  ggtitle("UserId vs user average rating")
+ 
+ 
+```
+
+ **Insight 4** : Movies tend to be consistently rated between 1.5  and 4.5. this is telling us that movies rated below 1.5 are few
+
+
+let's check the relashinship between the number of votes a movie have and the average rating for this movie ?
+
+```{r echo=FALSE, include = TRUE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+#Is there a relationship between number of votes and the average rating for the movie ?
+
+# create function get_corr
+get_cor <- function(df){
+  m <- cor(df$x, df$y, use="pairwise.complete.obs");
+  eq <- substitute(italic(r) == cor, list(cor = format(m, digits = 2)))
+  as.character(as.expression(eq));
+}
+
+
+# plot Number of votes vs average movie ratings
+edx %>%
+  ggplot(aes(numbVotes, movie_avg_rat)) + stat_bin_hex(bins = 50) + scale_fill_distiller(palette = "Spectral") +
+  stat_smooth(method = "lm", color = "orchid", size = 1) +
+  annotate("text", x = 20000, y = 2.5, label = get_cor(data.frame(x = edx$numbVotes, y = edx$movie_avg_rat)), 
+           parse = TRUE, color = "orchid", size = 7) + ylab("Average Movie Rating") + xlab("Number of Votes")
+
+
+```
+
+**Insight 5** : There is a positive correlation between number of votes and average movie rating (38%).  
+
+
+
+
+
+**MOVIE GENRES ANALYSIS** 
+
+We can notice that for most of the movies, several genres are piped together. we need to separate those genres to analyze movie genre impact on rating
+
+```{r echo=TRUE, include = FALSE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+
+edx_genres  <- edx %>% separate_rows(genres, sep ="\\|")
+head(edx_genres)
+
+# what is the number of  movies per genre 
+
+edx_genres %>% group_by(genres) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count))
+
+```
+
+```{r echo=FALSE, include = TRUE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+# what is the number of UNIQUE movies per genre C
+
+edx_genres %>% group_by(genres) %>%
+  summarise(count = length(unique(movieId))) %>%
+  arrange(desc(count))
+
+```
+
+we can see that spliting the genres creates duplicate rows in the dataset edx_genres as new rows are created for movies classified in multiples genres.
+
+When we summarize the UNIQUE movies per genre we notice that Drama, comedy and Actions are the ones with the most movies.
+
+Let's take a look at how the popularity of the genre evolve over the years 
+
+
+```{r echo=FALSE, include = FALSE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+
+genres_popularity <- edx_genres %>%
+  na.omit() %>% # omit missing values
+  mutate(genres = as.factor(genres)) %>% # turn genres in factors
+  group_by(year_rated, genres) %>% # group data by year and genre
+  summarise(number = n()) # count
+
+
+```
+
+plot the genre popularity over the years- we will only plot the top 5 popular genres- we will also filter from 1900
+
+```{r echo=FALSE, include = TRUE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+# this plot is interesting as we can use it to study the trend for a genre over the years
+
+genres_popularity %>%
+  filter(year_rated > 1900) %>%
+  filter(genres %in% c("Drama", "Comedy", "Thriller", "Romance", "Action")) %>%
+  ggplot(aes(x = year_rated, y = number)) +
+    geom_line(aes(color=genres)) +
+    scale_fill_brewer(palette = "Paired") 
+
+```
+
+
+Drama and comedy remains the most popular genres over the years.  I am currious to see what is the average rating for those movies and if users tend to give better ratings to the movies in thoses categories.
+
+```{r echo=FALSE, include = TRUE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+
+#Distribution of Ratings per Genre
+genre_avg_rating <- edx_genres %>%
+  group_by(genres) %>%
+  summarize ( genre_avg_rat = mean(rating)) %>%
+  arrange(desc(genre_avg_rat))
+genre_avg_rating
+
+# Plot the distribution
+genre_avg_rating %>%
+  ggplot(aes(reorder(genres, genre_avg_rat), genre_avg_rat, fill= genre_avg_rat)) +
+  geom_bar(stat = "identity") + coord_flip() +
+  scale_fill_distiller(palette = "Blues") + labs(y = "avg genre rating", x = "Genre") +
+  ggtitle("Average Rating by Genres")
+
+```
+
+surprisingly,  the most voted movie genres are not the ones with the highest average rating. Horror is the least rated movi genre, suggesting that people don't like to be scared. 
+
+
+
+The variables or variables to remove will have  low correlation with the outcome variable RATING  and /or high correlation with the other predictors/features.  From those criteria, Lets drop the variable age_avg_rat.
+
+```{r echo=FALSE, include = TRUE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+
+# drop unwanted features to reduce noise and avoid multicolinearity
+edx <- edx %>% select(-age_avg_rat)
+head(edx)
+
+```
+ 
+ 
+**CHECK FOR OUTLIERS**
+
+Lets check  those features distribution to see if they are normal . We will also check for outliers and other inconsistent data points with boxplots
+
+For a given continuous variable, outliers are those observations that lie outside 1.5*IQR, where IQR, the 'Inter Quartile Range' is the difference between 75th and 25th quartiles. Look at the points outside the whiskers in below box plot.
+
+```{r echo=TRUE, include = TRUE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+
+# Plot rating histogram
+ h1 <- edx %>% ggplot(aes(rating)) +   geom_bar()
+   # geom_histogram(binwidth = 1, fill = "blue", col = "black") 
+  
+
+# Plot  movie average rating histogram
+
+ h2 <- ggplot(data= edx) +
+      geom_histogram(mapping = aes(x= movie_avg_rat), bins = 15, boundary = 0, fill= "gray", col = "black")
+
+# Plot user average rating histogram
+
+  h3 <- ggplot(data= edx) +
+      geom_histogram(mapping = aes(x= user_avg_rat), bins = 15, boundary = 0, fill= "gray", col = "black")
+
+# Plot  movie age  histogram
+
+  h4 <- edx %>% ggplot(aes(movie_age)) + geom_bar()
+
+
+# arrange the histograms side by side for bettre observations
+
+grid.arrange(h1, h2, h3, h4,  nrow = 2, ncol = 2)
+
+```
+
+
+**Insight 6** : Ratings  plot suggest there are some of the movies have very few votes which result on either very large average for 1 vote of a small average rating. This suggest the existence of ouliers for ratings below . we will check this by checking the boxplots. We can also see that newer movies get more votes than the older ones. 
+
+
+```{r echo=FALSE, include = FALSE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+
+
+#boxplot User Average rating and histogram side by side to check for outliers . plot also histogram
+
+p1 <- ggplot(edx, aes(x=userId, y=user_avg_rat, group = 1)) +
+geom_boxplot(outlier.colour="red", fill="blue", outlier.shape=8, outlier.size=4)
+
+#boxplot  Movie Average rating and histogram side by side to check for outliers
+
+p2 <- ggplot(edx, aes(x=movieId, y=movie_avg_rat, group = 1)) +
+geom_boxplot(outlier.colour="red", fill="blue", outlier.shape=8, outlier.size=4)
+
+#boxplot  Movie Average rating  BASED ON AGE  and histogram side by side to check for outliers
+
+p3 <- ggplot(edx, aes(x=movie_age, y= movie_avg_rat, group = 1)) +
+geom_boxplot(outlier.colour="red", fill="blue", outlier.shape=8, outlier.size=4)
+
+```
+
+Let's print the boxplots to observe any outliers
+
+```{r echo=FALSE, include = TRUE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+
+# arrange the boxplots side by side for bettre observations
+
+grid.arrange(p1, p2, p3,   nrow = 1, ncol = 3)
+
+```
+
+For the movie average rating, most of the  outliers are below the 25 quartile. We will  identify those outliers and count them , and then remove them when we do the data preparation step
+
+We can have a quick look at the top 10 moVies that received the most votes 
+
+```{r echo=FALSE, include = TRUE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+
+# Take a look at the top 10 most voted movies - 
+
+edx %>% group_by(movieId, title, genres, numbVotes, movie_avg_rat) %>%
+	summarize(count = n()) %>%
+	arrange(desc(count))
+```
+
+lets take a look at the most voted ones and their ratings
+
+```{r echo=FALSE, include = TRUE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+
+# Take a look at the top 10 LESS voted movies - 
+
+edx %>% group_by(movieId, title, genres, numbVotes, movie_avg_rat) %>%
+	summarize(count = n()) %>%
+	arrange(count)
+```
+
+We can notice based on this sample that the most voted movies tend to have higher ratings . But we can also see that movies with the less votes can also have a high rating.
+for example the movie Hellhounds on My Trail (1999) has a rating of 5 with only one vote.
+
+
+## DATA PREPARATION
+
+**Remove outliers we spotted when doing data exploration. we will call the new dataset edx_ml**
+
+ I will consider an outlier everything below or above the 0.25 and 0.75 quantiles.
+
+```{r echo=TRUE, include = TRUE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+
+# Use the summary statistic to find the  75th and 25th percentiles
+  summary(edx$rating)
+```
+
+```{r echo=TRUE, include = FALSE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+
+# calculate interquartile IQR - this will yield same  75th and 25th percentiles as summary function
+
+    Q1 <- quantile(edx$rating, 0.25)
+    Q3 <- quantile(edx$rating, 0.75)
+    IQR = Q3 - Q1
+```
+
+```{r echo=TRUE, include = TRUE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+    
+# Find the lower and upper fence that defines the outliers
+
+  lowerFence <- Q1 - 1.5 * IQR
+  upperFence <- Q3 + 1.5 * IQR
+  lowerFence #this is the 25th percentile
+  upperFence #this is the 75th percentiel
+
+```
+
+The 25th percentile is the lowerFence of the boxplot and has a value of 1.5 when the uperFence is the 75th percentile with a value of 5.5
+
+Lets count the number of outliers rows based on those values.
+
+```{r echo=TRUE, include = FALSE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+#define the outliers values from columnn ratings 
+OutVals <- boxplot(edx$rating)$out
+
+#print the outliers values
+which(edx$rating %in% OutVals)
+
+```
+
+```{r echo=TRUE, include = TRUE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+# count the number of outliers
+
+length(which(edx$rating %in% OutVals))
+
+
+```
+
+
+ 
+ There are 431 053 outliers rows : those rose all have a rating < 1.5 .
+
+Let's remove the outliers rows from the dataset and call the new dataset edx_ml tat we will consider for our modelling. we will keep the ones qith the outliers and will compare the odelling results with both dataset; this will allow us to see the effect of the ouliers on our models
+
+
+```{r echo=TRUE, include = FALSE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+
+# Find the outliers 
+outliers <- boxplot(edx$rating, plot=FALSE)$out
+
+# First you need find in which rows the outliers are
+
+ edx[which(edx$rating %in% outliers),]
+
+# Now you can remove the rows containing the outliers, one possible option is:
+
+edx_ml <- edx[-which(edx$rating %in% outliers),]
+
+
+
+```
+
+
+Let's take a look at the new dataset edx_ml
+
+```{r echo=TRUE, include = TRUE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+
+# drop unwanted colums
+edx_ml <- edx_ml %>% select(-timestamp, -premier_year, -year_rated)
+
+# summary statistics
+
+dim(edx_ml)
+n_distinct(edx_ml$movieId)
+n_distinct(edx_ml$userId)
+summary(edx_ml)
+
+````
+
+There are fewer rows (8 569 002). Minimum rating is now 1.5,  and the mean improved from 3.512 to 3.664. 
+We can also notice that there are fewer disctinct movies (10664). we dropped 13 movies that were probably rate 1.5 or lower
+there are also fewer users (69870). we dropped 8 users
+
+
+ 
+we will move forward with the  below features:
+ 
+ * average movie rating (movie_avg_rat) : this will be the feature that check the movie_effect
+ * average user rating (User_avg_rat) : this will be the feature that check the user_effect
+ * the age of the movie at the time of rating (movie_age) : this will be the feature that check the age_effect
+
+
+## MODELLING 
+
+
+**What are we trying to predict?**
+
+Not all movies were rated in the dataset by all Users. Our goal is  to predict which rating a user will give to a particular movie based on other users' ratings, the movieaverage rating or the movie age .
+
+
+**What type of problem is it? Supervised or Unsupervised Learning? Classification or Regression? Binary or Multi-class?  Uni-variate or Multi-variate?**
+
+This is a multivariate supervised machine learning problem in which we have to predict numeric outcomes. so I will be using linear regression techniques.
+
+I  will use edx_ml as the training set. edx_ml is the final dataset without  the outliers. 
+I will also train the full edx dataset(with all outliers) and compare the results to see if removing the outliers did have an impact on RMSE.
+
+I will treat validation as new data I don't have any access to until my algorithm is finished. So all my calculations / cross-validations will be on the training dataset edx_ml and edx. In the final step, I will predict user ratings on validation set .
+
+
+**Assessing the Fit of linear Regression Model**
+
+A well-fitting regression model results in predicted values close to the observed data values. Three statistics are used in Ordinary Least Squares (OLS) regression to evaluate model fit: R-squared, the overall F-test, and the Root Mean Square Error (RMSE).
+
+I will be using the RMSE statistic here to assess the fit of the model
+
+The RMSE is the square root of the variance of the residuals. It indicates the absolute fit of the model to the data .  It measures how close the observed data points are to the model's predicted values.  Lower values of RMSE indicate better fit. 
+
+**LETS CACULATE RMSE**
+
+We will use 2 regression models to calculate the RMSE
+
+MODEL 1 (movie_effect + user_effect) : Predicted_rating = mu + b_m + b_u 
+
+Model 2 (movie_effect + user_effect  + age_effect ) : predicted_rating =  mu + b_m + b_u + b_a
+
+
+Basically, we will add age_effect to the first model to see if it improves our RMSE
+
+
+
+**MODEL 1 (movie_effect + user_effect) TRAINING : Predicted_rating =  mu + b_m + b_u**
+
+Let's use  cross validation on the train set EDX_ML to define  without using the test set until the final assessment. The test set should 
+
+```{r echo=TRUE, include = TRUE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+
+# define RMSE function
+RMSE <- function(actual_rating, predicted_rating){
+  sqrt(mean((actual_rating - predicted_rating)^2))
+}
+
+#Choose the tuning value of lambda
+
+lambdas <- seq(0,5,.5)
+model_1_rmses <- sapply(lambdas, function(l){
+  mu <- mean(edx_ml$rating)
+  
+  b_m <- edx_ml %>%
+    group_by(movieId) %>%
+    summarize(b_m = sum(rating - mu)/(n() + l))
+  
+  b_u <- edx_ml %>%
+    left_join(b_m, by='movieId') %>% 
+    group_by(userId) %>%
+    summarize(b_u = sum(rating - b_m - mu)/(n() +l))
+  
+  predicted_rating <- edx_ml %>%
+    left_join(b_m, by = "movieId") %>%
+    left_join(b_u, by = "userId") %>%
+    mutate(pred = mu + b_m +  b_u) %>% .$pred
+  
+  return(RMSE(predicted_rating, edx_ml$rating))
+})
+
+
+# lets compute lambdas curve to visually assess the optimal lambda
+qplot(lambdas, model_1_rmses)
+
+
+
+```
+
+
+Let's find the lambda which minimize model_1_rmse
+
+```{r echo=TRUE, include = TRUE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+# determine optimal lambda
+lambdas[which.min(model_1_rmses)]
+
+````
+
+
+ Model 1 Validation :  Check model 1 against the validation set  
+
+
+```{r echo=TRUE, include = TRUE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+
+#Check model 1 againt the validation set Prepare Validation set
+mu <- mean(validation$rating)
+l <- 0.5
+b_m <- validation %>%
+    group_by(movieId) %>%
+    summarize(b_m = sum(rating - mu)/(n() + l))
+  
+b_u <- validation %>%
+    left_join(b_m, by='movieId') %>% 
+    group_by(userId) %>%
+    summarize(b_u = sum(rating - b_m - mu)/(n() +l))
+  
+predicted_rating <- validation %>%
+    left_join(b_m, by = "movieId") %>%
+    left_join(b_u, by = "userId") %>%
+    mutate(pred = mu + b_m +  b_u) %>% .$pred
+
+RMSE(predicted_rating, validation$rating) 
+
+
+```
+
+we get **RMSE = 0.8258487** 
+
+
+ 
+**Model 2 (movie_effect + user_effect  + age_effect ) : predicted_rating =  mu + b_m + b_u + b_a**
+
+In this second model, we will add the movie effect and see if it improves RMSE
+Let's use  cross validation on the train set EDX_ML to define the optimal lambda  on the training set 
+
+```{r echo=TRUE, include = TRUE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+
+# define RMSE2 function
+RMSE2 <- function(actual_rating, predicted_rating2){
+  sqrt(mean((actual_rating - predicted_rating2)^2))
+}
+
+#Choose the tuning value of lambda
+lambdas <- seq(0,5,.5)
+model_2_rmses <- sapply(lambdas, function(l){
+  mu <- mean(edx_ml$rating)
+  
+  b_m <- edx_ml %>%
+    group_by(movieId) %>%
+    summarize(b_m = sum(rating - mu)/(n() + l))
+  
+  b_u <- edx_ml %>%
+    left_join(b_m, by='movieId') %>% 
+    group_by(userId) %>%
+    summarize(b_u = sum(rating - b_m - mu)/(n() +l))
+  
+   b_a <- edx_ml %>%
+    left_join(b_m, by='movieId') %>%
+     left_join(b_u, by='userId') %>%
+     group_by(movie_age) %>%
+    summarize(b_a = sum(rating - b_m - b_u - mu)/(n() +l))
+  
+  
+  
+  predicted_rating2 <- edx_ml %>%
+    left_join(b_m, by = "movieId") %>%
+    left_join(b_u, by = "userId") %>%
+    left_join(b_a, by = "movie_age") %>%
+    mutate(pred = mu + b_m +  b_u + b_a) %>% .$pred
+  
+  return(RMSE2(predicted_rating2, edx_ml$rating))
+})
+
+
+#plot Lambdas
+qplot(lambdas, model_2_rmses)
+
+```
+
+
+Let's find the lambda which minimize model_2_rmse
+
+```{r echo=TRUE, include = TRUE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+
+# define optimal lambda value
+lambdas[which.min(model_2_rmses)]
+
+````
+
+
+
+ *Check model 2 against the validation set : predicted_rating =  mu + b_m + b_u + b_a
+
+
+
+
+```{r echo=TRUE, include = FALSE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+
+#extracting the premier year
+premierdatev <- stringi::stri_extract(validation$title, regex = "(\\d{4})", comments = TRUE ) %>% as.numeric()
+
+
+#Add the premier year as a column to validation dataset
+validation2 <- validation %>% mutate(premier_yearv = premierdatev)
+
+
+# convert the rating timestamp to year and add it to validation dataset
+
+validation2 <- mutate(validation2, year_ratedv = year(as_datetime(timestamp)))
+
+
+#Calculate the  movie age  by the time the movie was rated by the user and add the variable to the dataset edx
+
+validation2 <- validation2 %>% mutate( movie_age = year_ratedv - premier_yearv)
+
+```
+
+
+
+Now let begin the real tests
+
+```{r echo=TRUE, include = TRUE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+
+#Check model 2 againt the validation set Prepare Validation set
+mu <- mean(validation2$rating)
+l <- 0.5
+b_m <- validation2 %>%
+    group_by(movieId) %>%
+    summarize(b_m = sum(rating - mu)/(n() + l))
+  
+b_u <- validation2 %>%
+    left_join(b_m, by='movieId') %>% 
+    group_by(userId) %>%
+    summarize(b_u = sum(rating - b_m - mu)/(n() +l))
+
+b_a <- validation2 %>%
+    left_join(b_m, by='movieId') %>% 
+    left_join(b_u, by='userId') %>% 
+    group_by(movie_age) %>%
+    summarize(b_a = sum(rating - b_m - b_u - mu)/(n() +l))
+  
+predicted_rating2 <- validation2 %>%
+    left_join(b_m, by = "movieId") %>%
+    left_join(b_u, by = "userId") %>%
+    left_join(b_a, by = "movie_age") %>%
+    mutate(pred = mu + b_m +  b_u + b_a) %>% .$pred
+
+RMSE2(predicted_rating2, validation2$rating) 
+
+
+```
+
+We get **RMSE = 0.825298**
+
+
+
+**MODELING WITH OUTLIERS**
+
+Lets check to see if keeping the outliers would have had an impact on our results. we will use the dataset edx (With all the outliers, wich means the movies with ratings < 1.5)
+
+
+```{r echo=TRUE, include = TRUE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+
+edx <- edx %>% select(-numbVotes) # drop non numeric values from edx_ml dataset
+
+# define RMSE function for edx
+RMSE_all <- function(actual_rating, predicted_rating){
+  sqrt(mean((actual_rating - predicted_rating)^2))
+}
+
+#Choose the tuning value of lambda
+
+lambdas <- seq(0,5,.5)
+rmses <- sapply(lambdas, function(l){
+  mu <- mean(edx$rating)
+  
+  b_m <- edx %>%
+    group_by(movieId) %>%
+    summarize(b_m = sum(rating - mu)/(n() + l))
+  
+  b_u <- edx %>%
+    left_join(b_m, by='movieId') %>% 
+    group_by(userId) %>%
+    summarize(b_u = sum(rating - b_m - mu)/(n() +l))
+  
+  predicted_rating <- edx %>%
+    left_join(b_m, by = "movieId") %>%
+    left_join(b_u, by = "userId") %>%
+    mutate(pred = mu + b_m +  b_u) %>% .$pred
+  
+  return(RMSE_all(predicted_rating, edx$rating))
+})
+
+
+# lets compute lambdas curve to visually assess the optimal lambda
+qplot(lambdas, rmses)
+
+# define optimal lambda value
+lambdas[which.min(rmses)]
+
+```
+
+Do the testing on the validation set 
+
+
+```{r echo=TRUE, include = TRUE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+
+#Check  againt the validation 
+mu <- mean(validation$rating)
+l <- 0.5
+b_m <- validation %>%
+    group_by(movieId) %>%
+    summarize(b_m = sum(rating - mu)/(n() + l))
+  
+b_u <- validation %>%
+    left_join(b_m, by='movieId') %>% 
+    group_by(userId) %>%
+    summarize(b_u = sum(rating - b_m - mu)/(n() +l))
+  
+predicted_rating <- validation %>%
+    left_join(b_m, by = "movieId") %>%
+    left_join(b_u, by = "userId") %>%
+    mutate(pred = mu + b_m +  b_u) %>% .$pred
+
+RMSE_all(predicted_rating, validation$rating) 
+
+
+```
+
+We get **RMSE = 0.8258487** . This is the same RMSE that the one obtained before with model 1(Movie_effect + User_effect). No improvement here as well.
+
+## RESULTS
+
+1. Adding the movie age feature as variable  is  slightly lowering the RMSE which is lowered from 0.8258487 (0.826) to  0.825298 (0.825), a improvement of only 0.06 %. This improvement is not  significant. Adding the additional feature Movie age is not improving the model significantly.
+
+2. Using the model with the full edx dataset inculing the outliers is also yielding the same RMSE = 0.8258487 . It did not improve RMSE on model 1 (Movie_effect + User_effect). 
+
+
+## PROJECT CONCLUSIONS 
+
+
+lets put the results side to side for comparison
+
+```{r echo=TRUE, include = TRUE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+
+# Computing the 2 models results side by side
+
+#model 1:  Predicted_rating = intercept + movie_effect + user_effect =  mu + b_m + b_u 
+movie_User_effect <- RMSE(predicted_rating, validation$rating)
+model_1_results <- data_frame(method = "Movie + User_effects", RMSE = movie_User_effect)
+
+# model 2 : Model 2 : predicted_rating = intercept + movie_effect + user_effect  + age_effect=  mu + b_m + b_u + b_a
+movie_user_age_effect <- RMSE2(predicted_rating2, validation2$rating)
+model_2_results <- data_frame(method = "Movie + User + age_effects", RMSE2 = movie_user_age_effect)
+
+```
+
+
+This yield the below table
+
+```{r echo=FALSE, include = TRUE, eval=TRUE, warning = FALSE, error= FALSE, Message = FALSE}
+#result table
+rmse_results <- bind_rows(model_1_results, model_2_results)
+rmse_results
+                         
+```
+
+
+We will keep the  model 1 (movie_effect + user_effect) :  **Predicted_rating =  mu + b_m + b_u** since adding movie age did not significantly improve the RMSE. 
+
+We were able to get a **RMSE = 0.8258487** ( rounded to 0.826 in the above computation) using the movie_effect(b_m) and the user_effect (b_u). This is an improvement on the RMSE target assigned.  
+
+ 
+ 
+
+
+
